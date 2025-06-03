@@ -1,0 +1,39 @@
+name: Database Backup
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+      - dev
+  workflow_dispatch: # Keeps manual trigger option
+
+jobs:
+  backup:
+    # Only run if PR was merged (not just closed)
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Create backup
+        run: |
+          mkdir -p backups
+          BACKUP_FILE="backups/backup_$(date +%Y%m%d_%H%M%S)_PR${github.event.pull_request.number}.sql"
+          PGPASSWORD=${{ secrets.DATABASE_PASSWORD }} pg_dump -h ${{ secrets.DATABASE_HOST }} -U ${{ secrets.DATABASE_USER }} -d ${{ secrets.DATABASE_NAME }} > $BACKUP_FILE
+        env:
+          PGPASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-backup-pr-${{ github.event.pull_request.number }}
+          path: backups/*.sql
+          retention-days: 30
