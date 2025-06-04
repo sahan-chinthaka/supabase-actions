@@ -1,0 +1,133 @@
+name: Database Restore
+
+on:
+  workflow_dispatch:
+    inputs:
+      backup_filename:
+        description: "Backup filename to restore (e.g., backup_20250604_104307.dump)"
+        required: true
+        type: string
+      confirm_restore:
+        description: 'Type "CONFIRM" to proceed with restore (this will overwrite existing data)'
+        required: true
+        type: string
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm_restore == 'CONFIRM'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate inputs
+        run: |
+          if [[ ! "${{ github.event.inputs.backup_filename }}" =~ ^backup_[0-9]{8}_[0-9]{6}\.dump$ ]]; then
+            echo "Error: Invalid backup filename format. Expected format: backup_YYYYMMDD_HHMMSS.dump"
+            exit 1
+          fi
+          echo "Backup filename is valid: ${{ github.event.inputs.backup_filename }}"
+
+      - name: Install PostgreSQL client and AWS CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client python3-pip
+          pip3 install awscli
+
+      - name: Configure AWS CLI for R2
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.R2_ACCESS_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          aws configure set region auto
+
+      - name: Download backup from R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: |
+          echo "Downloading backup: ${{ github.event.inputs.backup_filename }}"
+          aws s3 cp s3://${R2_BUCKET_NAME}/backups/${{ github.event.inputs.backup_filename }} ./${{ github.event.inputs.backup_filename }} --endpoint-url $R2_ENDPOINT
+
+          # Verify file was downloaded
+          if [[ ! -f "${{ github.event.inputs.backup_filename }}" ]]; then
+            echo "Error: Failed to download backup file"
+            exit 1
+          fi
+
+          echo "Backup file downloaded successfully"
+          ls -la ${{ github.event.inputs.backup_filename }}
+
+      - name: Create database backup before restore
+        env:
+          PGPASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          PGHOST: ${{ secrets.DATABASE_HOST }}
+          PGUSER: ${{ secrets.DATABASE_USER }}
+          PGDATABASE: ${{ secrets.DATABASE_NAME }}
+        run: |
+          echo "Creating safety backup before restore..."
+          SAFETY_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          pg_dump -Fc > "safety_backup_${SAFETY_TIMESTAMP}.dump"
+          echo "SAFETY_BACKUP=safety_backup_${SAFETY_TIMESTAMP}.dump" >> $GITHUB_ENV
+
+      - name: Upload safety backup to R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: |
+          echo "Uploading safety backup to R2..."
+          aws s3 cp ${SAFETY_BACKUP} s3://${R2_BUCKET_NAME}/safety-backups/${SAFETY_BACKUP} --endpoint-url $R2_ENDPOINT
+          echo "Safety backup uploaded: ${SAFETY_BACKUP}"
+
+      - name: Restore database
+        env:
+          PGPASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          PGHOST: ${{ secrets.DATABASE_HOST }}
+          PGUSER: ${{ secrets.DATABASE_USER }}
+          PGDATABASE: ${{ secrets.DATABASE_NAME }}
+        run: |
+          echo "Starting database restore..."
+          echo "WARNING: This will overwrite all existing data in the database!"
+
+          # Drop existing connections (optional, be careful with this)
+          # psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$PGDATABASE' AND pid <> pg_backend_pid();"
+
+          # Clean existing data (be very careful with this!)
+          echo "Cleaning existing database schema..."
+          pg_restore --clean --if-exists --no-owner --no-privileges --verbose ${{ github.event.inputs.backup_filename }}
+
+          echo "Database restore completed successfully!"
+
+      - name: Verify restore
+        env:
+          PGPASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          PGHOST: ${{ secrets.DATABASE_HOST }}
+          PGUSER: ${{ secrets.DATABASE_USER }}
+          PGDATABASE: ${{ secrets.DATABASE_NAME }}
+        run: |
+          echo "Verifying database restore..."
+
+          # Get table count
+          TABLE_COUNT=$(psql -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';")
+          echo "Number of tables in restored database: $TABLE_COUNT"
+
+          # List all tables
+          echo "Tables in restored database:"
+          psql -c "\dt"
+
+          echo "Database restore verification completed!"
+
+      - name: Cleanup local files
+        run: |
+          rm -f ${{ github.event.inputs.backup_filename }}
+          rm -f ${SAFETY_BACKUP}
+          echo "Local backup files cleaned up"
+
+      - name: Restore Summary
+        run: |
+          echo "=== RESTORE SUMMARY ==="
+          echo "✅ Backup file: ${{ github.event.inputs.backup_filename }}"
+          echo "✅ Safety backup created: ${SAFETY_BACKUP}"
+          echo "✅ Database restored successfully"
+          echo "✅ Restore verification completed"
+          echo "========================"
