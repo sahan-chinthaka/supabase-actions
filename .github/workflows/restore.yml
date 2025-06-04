@@ -90,11 +90,9 @@ jobs:
           echo "WARNING: This will overwrite all existing data in the database!"
 
           # Drop existing connections (optional, be careful with this)
-          # psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$PGDATABASE' AND pid <> pg_backend_pid();"
-
-          # Clean existing data (be very careful with this!)
+          # psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$PGDATABASE' AND pid <> pg_backend_pid();"          # Clean existing data (be very careful with this!)
           echo "Cleaning existing database schema..."
-          pg_restore --clean --if-exists --no-owner --no-privileges --verbose ${{ github.event.inputs.backup_filename }}
+          pg_restore --clean --if-exists --no-owner --no-privileges --verbose -d $PGDATABASE ${{ github.event.inputs.backup_filename }}
 
           echo "Database restore completed successfully!"
 
