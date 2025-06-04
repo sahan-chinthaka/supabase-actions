@@ -19,6 +19,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client python3-pip
           pip3 install awscli
+      - name: Set timestamp
+        run: echo "TIMESTAMP=$(date +%Y%m%d_%H%M%S)" >> $GITHUB_ENV
 
       - name: Create backup
         env:
@@ -27,8 +29,7 @@ jobs:
           PGUSER: ${{ secrets.DATABASE_USER }}
           PGDATABASE: ${{ secrets.DATABASE_NAME }}
         run: |
-          timestamp=$(date +%Y%m%d_%H%M%S)
-          pg_dump -Fc > "backup_${timestamp}.dump"
+          pg_dump -Fc > "backup_${TIMESTAMP}.dump"
 
       - name: Configure AWS CLI for R2
         run: |
@@ -40,5 +41,4 @@ jobs:
         env:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
         run: |
-          timestamp=$(date +%Y%m%d_%H%M%S)
-          aws s3 cp backup_${timestamp}.dump s3://your-bucket-name/backups/backup_${timestamp}.dump --endpoint-url $R2_ENDPOINT
+          aws s3 cp backup_${TIMESTAMP}.dump s3://your-bucket-name/backups/backup_${TIMESTAMP}.dump --endpoint-url $R2_ENDPOINT
