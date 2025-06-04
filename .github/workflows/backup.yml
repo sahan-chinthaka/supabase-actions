@@ -40,5 +40,6 @@ jobs:
       - name: Upload to R2
         env:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
-          aws s3 cp backup_${TIMESTAMP}.dump s3://your-bucket-name/backups/backup_${TIMESTAMP}.dump --endpoint-url $R2_ENDPOINT
+          aws s3 cp backup_${TIMESTAMP}.dump s3://${R2_BUCKET_NAME}/backups/backup_${TIMESTAMP}.dump --endpoint-url $R2_ENDPOINT
