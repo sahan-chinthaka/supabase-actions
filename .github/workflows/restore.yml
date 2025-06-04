@@ -76,7 +76,53 @@ jobs:
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
           echo "Uploading safety backup to R2..."
-          aws s3 cp ${SAFETY_BACKUP} s3://${R2_BUCKET_NAME}/safety-backups/${SAFETY_BACKUP} --endpoint-url $R2_ENDPOINT          echo "Safety backup uploaded: ${SAFETY_BACKUP}"
+          aws s3 cp ${SAFETY_BACKUP} s3://${R2_BUCKET_NAME}/safety-backups/${SAFETY_BACKUP} --endpoint-url $R2_ENDPOINT
+          echo "Safety backup uploaded: ${SAFETY_BACKUP}"
+
+      - name: Reset database schema
+        env:
+          PGPASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          PGHOST: ${{ secrets.DATABASE_HOST }}
+          PGUSER: ${{ secrets.DATABASE_USER }}
+          PGDATABASE: ${{ secrets.DATABASE_NAME }}
+        run: |
+          echo "Resetting database schema before restore..."
+          echo "WARNING: This will drop all existing tables and data!"
+
+          # Drop all tables in public schema
+          psql -c "
+            DO \$\$ 
+            DECLARE 
+                r RECORD;
+            BEGIN
+                -- Drop all tables
+                FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') 
+                LOOP
+                    EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE';
+                END LOOP;
+                
+                -- Drop all sequences
+                FOR r IN (SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public')
+                LOOP
+                    EXECUTE 'DROP SEQUENCE IF EXISTS public.' || quote_ident(r.sequence_name) || ' CASCADE';
+                END LOOP;
+                
+                -- Drop all functions
+                FOR r IN (SELECT proname, pg_get_function_identity_arguments(oid) as args 
+                         FROM pg_proc 
+                         WHERE pronamespace = 'public'::regnamespace)
+                LOOP
+                    EXECUTE 'DROP FUNCTION IF EXISTS public.' || quote_ident(r.proname) || '(' || r.args || ') CASCADE';
+                END LOOP;
+                
+                -- Drop all types
+                FOR r IN (SELECT typname FROM pg_type WHERE typnamespace = 'public'::regnamespace AND typtype = 'c')
+                LOOP
+                    EXECUTE 'DROP TYPE IF EXISTS public.' || quote_ident(r.typname) || ' CASCADE';
+                END LOOP;
+            END \$\$;"
+
+          echo "Database schema reset completed."
 
       - name: Restore database
         env:
@@ -86,18 +132,12 @@ jobs:
           PGDATABASE: ${{ secrets.DATABASE_NAME }}
         run: |
           echo "Starting database restore..."
-          echo "WARNING: This will overwrite all existing data in the database!"
+          echo "Restoring from backup: ${{ github.event.inputs.backup_filename }}"
 
-          # Drop existing connections (optional, be careful with this)
-          # psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$PGDATABASE' AND pid <> pg_backend_pid();"
-
-          # Clean existing data (be very careful with this!)
-          echo "Cleaning existing database schema..."
-
+          # Restore without --clean since we already reset the schema
           # Use --exit-on-error=false to continue despite errors (common in managed databases)
-          # Use --single-transaction to ensure atomicity
           set +e  # Disable exit on error temporarily
-          pg_restore --clean --if-exists --no-owner --no-privileges --verbose \
+          pg_restore --no-owner --no-privileges --verbose \
             --single-transaction --exit-on-error=false \
             -d $PGDATABASE ${{ github.event.inputs.backup_filename }}
 
